@@ -1,8 +1,10 @@
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
 socketio = SocketIO(app)
+
+connected_clients = []
 
 @app.route('/')
 def index():
@@ -20,25 +22,18 @@ def index():
         <script>
             const socket = io();
             let localStream;
-            let remoteStream;
             let peerConnection;
+            const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
             const localVideo = document.getElementById('localVideo');
             const remoteVideo = document.getElementById('remoteVideo');
 
-            const constraints = {
-                video: true,
-                audio: true
-            };
+            const constraints = { video: true, audio: true };
 
             async function startCall() {
                 try {
                     localStream = await navigator.mediaDevices.getUserMedia(constraints);
                     localVideo.srcObject = localStream;
-
-                    const configuration = {
-                        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-                    };
 
                     peerConnection = new RTCPeerConnection(configuration);
 
@@ -51,8 +46,9 @@ def index():
                     };
 
                     peerConnection.ontrack = event => {
-                        remoteStream = event.streams[0];
-                        remoteVideo.srcObject = remoteStream;
+                        if (event.streams[0] && remoteVideo.srcObject !== event.streams[0]) {
+                            remoteVideo.srcObject = event.streams[0];
+                        }
                     };
 
                     const offer = await peerConnection.createOffer();
@@ -65,8 +61,26 @@ def index():
 
             socket.on('offer', async (offer) => {
                 if (!peerConnection) {
-                    startCall();
+                    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                    localVideo.srcObject = localStream;
+
+                    peerConnection = new RTCPeerConnection(configuration);
+
+                    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+                    peerConnection.onicecandidate = event => {
+                        if (event.candidate) {
+                            socket.emit('candidate', event.candidate);
+                        }
+                    };
+
+                    peerConnection.ontrack = event => {
+                        if (event.streams[0] && remoteVideo.srcObject !== event.streams[0]) {
+                            remoteVideo.srcObject = event.streams[0];
+                        }
+                    };
                 }
+
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
@@ -81,24 +95,41 @@ def index():
                 await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
             });
 
-            startCall();
+            socket.on('initiate', startCall);
+
+            socket.emit('client_connected');
         </script>
     </body>
     </html>
     """
     return render_template_string(html_code)
 
+@socketio.on('client_connected')
+def handle_client_connected():
+    connected_clients.append(request.sid)
+    if len(connected_clients) > 2:
+        emit('full', 'Room is full', room=request.sid)
+    elif len(connected_clients) == 2:
+        for client in connected_clients:
+            emit('initiate', room=client)
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    if request.sid in connected_clients:
+        connected_clients.remove(request.sid)
+    emit('connected', len(connected_clients), broadcast=True)
+
 @socketio.on('offer')
 def handle_offer(data):
-    emit('offer', data, broadcast=True)
+    emit('offer', data, broadcast=True, include_self=False)
 
 @socketio.on('answer')
 def handle_answer(data):
-    emit('answer', data, broadcast=True)
+    emit('answer', data, broadcast=True, include_self=False)
 
 @socketio.on('candidate')
 def handle_candidate(data):
-    emit('candidate', data, broadcast=True)
+    emit('candidate', data, broadcast=True, include_self=False)
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)
