@@ -4,8 +4,6 @@ from flask_socketio import SocketIO, emit
 app = Flask(__name__)
 socketio = SocketIO(app)
 
-connected_clients = []
-
 @app.route('/')
 def index():
     html_code = """
@@ -24,7 +22,6 @@ def index():
             let localStream;
             let remoteStream;
             let peerConnection;
-            let isInitiator = false;
 
             const localVideo = document.getElementById('localVideo');
             const remoteVideo = document.getElementById('remoteVideo');
@@ -58,11 +55,9 @@ def index():
                         remoteVideo.srcObject = remoteStream;
                     };
 
-                    if (isInitiator) {
-                        const offer = await peerConnection.createOffer();
-                        await peerConnection.setLocalDescription(offer);
-                        socket.emit('offer', offer);
-                    }
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                    socket.emit('offer', offer);
                 } catch (error) {
                     console.error('Error accessing media devices.', error);
                 }
@@ -86,36 +81,12 @@ def index():
                 await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
             });
 
-            socket.on('initiate', () => {
-                isInitiator = true;
-                startCall();
-            });
-
-            socket.on('connected', (clientCount) => {
-                if (clientCount === 2) {
-                    socket.emit('initiate');
-                }
-            });
-
-            socket.emit('client_connected');
+            startCall();
         </script>
     </body>
     </html>
     """
     return render_template_string(html_code)
-
-@socketio.on('client_connected')
-def handle_client_connected():
-    connected_clients.append(request.sid)
-    if len(connected_clients) > 2:
-        emit('full', 'Room is full', room=request.sid)
-    else:
-        emit('connected', len(connected_clients), broadcast=True)
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    connected_clients.remove(request.sid)
-    emit('connected', len(connected_clients), broadcast=True)
 
 @socketio.on('offer')
 def handle_offer(data):
